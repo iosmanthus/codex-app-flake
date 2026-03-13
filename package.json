@@ -1,0 +1,8 @@
+{
+  "name": "codex-app-bin-native-build",
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "12.5.0",
+    "node-pty": "1.1.0"
+  }
+}
