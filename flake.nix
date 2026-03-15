@@ -14,10 +14,16 @@
         "aarch64-linux"
       ];
       forEachSystem = lib.genAttrs systems;
+      overlay = final: prev: {
+        codex-app-bin = final.callPackage ./package.nix {
+          codex = final.codex;
+        };
+      };
       pkgsFor =
         system:
         import nixpkgs {
           inherit system;
+          overlays = [ overlay ];
           config.allowUnfreePredicate =
             pkg:
             builtins.elem (lib.getName pkg) [
@@ -26,13 +32,16 @@
         };
     in
     {
+      overlays = {
+        default = overlay;
+        codex-app-bin = overlay;
+      };
+
       packages = forEachSystem (
         system:
         let
           pkgs = pkgsFor system;
-          codex-app-bin = pkgs.callPackage ./package.nix {
-            codex = pkgs.codex;
-          };
+          codex-app-bin = pkgs.codex-app-bin;
         in
         {
           inherit codex-app-bin;
