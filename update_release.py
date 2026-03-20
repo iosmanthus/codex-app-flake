@@ -283,6 +283,12 @@ def main() -> int:
 
         if current_meta == next_meta:
             print(f"Codex {version} is up to date")
+            ensure_release(
+                version=version,
+                dmg_path=dmg_path,
+                target_commit=run("git", "rev-parse", "HEAD", cwd=ROOT, capture=True).stdout.strip(),
+                repo=github_repo,
+            )
             return 0
 
         if remote_tag_exists(version):

@@ -112,58 +112,13 @@ stdenvNoCC.mkDerivation (finalAttrs: {
       cp -a "$resourcesDir/app.asar.unpacked/." "$workDir/app/"
     fi
 
-    cat > "$workDir/app/.vite/build/linux-window-icon.cjs" <<'EOF'
-if (process.platform === "linux" && process.type === "browser") {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const electron = require("electron");
+    cp ${./patches/linux-window-icon.cjs} "$workDir/app/.vite/build/linux-window-icon.cjs"
 
-  const iconPath = path.join(process.resourcesPath, "codex-app-icon.png");
-
-  if (fs.existsSync(iconPath)) {
-    const icon = electron.nativeImage.createFromPath(iconPath);
-
-    if (!icon.isEmpty()) {
-      const setWindowIcon = (window) => {
-        if (typeof window?.setIcon === "function") {
-          window.setIcon(icon);
-        }
-      };
-
-      electron.app.on("browser-window-created", (_event, window) => {
-        setWindowIcon(window);
-        window.once("ready-to-show", () => {
-          setWindowIcon(window);
-        });
-      });
-
-      for (const window of electron.BrowserWindow.getAllWindows()) {
-        setWindowIcon(window);
-      }
-    }
-  }
-}
-EOF
-
-    BOOTSTRAP_FILE="$workDir/app/.vite/build/bootstrap.js" ${python3}/bin/python3 - <<'PY'
-import os
-import pathlib
-import re
-
-path = pathlib.Path(os.environ["BOOTSTRAP_FILE"])
-text = path.read_text()
-
-if 'require("./linux-window-icon.cjs");' not in text:
-    pattern = re.compile(r'require\((["\'])\./bootstrap-[^"\']+\.js\1\);')
-
-    def inject(match):
-        return 'require("./linux-window-icon.cjs");\n' + match.group(0)
-
-    text, replacements = pattern.subn(inject, text, count=1)
-    if replacements != 1:
-        raise SystemExit(f"failed to patch {path}: expected 1 bootstrap chunk require, got {replacements}")
-    path.write_text(text)
-PY
+    bootstrapFile="$workDir/app/.vite/build/bootstrap.js"
+    bootstrapTmp="$TMPDIR/bootstrap.js"
+    printf '%s\n' 'require("./linux-window-icon.cjs");' > "$bootstrapTmp"
+    cat "$bootstrapFile" >> "$bootstrapTmp"
+    mv "$bootstrapTmp" "$bootstrapFile"
 
     rm -rf "$workDir/app/node_modules/sparkle-darwin"
     find "$workDir/app" -name sparkle.node -delete
