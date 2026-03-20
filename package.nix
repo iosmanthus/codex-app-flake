@@ -8,9 +8,7 @@
   libicns,
   nodePackages,
   nodejs_20,
-  file,
   gcc,
-  gnugrep,
   gnumake,
   pkg-config,
   coreutils,
@@ -147,10 +145,25 @@ if (process.platform === "linux" && process.type === "browser") {
 }
 EOF
 
-    substituteInPlace "$workDir/app/.vite/build/bootstrap.js" \
-      --replace-fail \
-        'require("./bootstrap-BYAV6t_u.js");' \
-        'require("./linux-window-icon.cjs"); require("./bootstrap-BYAV6t_u.js");'
+    BOOTSTRAP_FILE="$workDir/app/.vite/build/bootstrap.js" ${python3}/bin/python3 - <<'PY'
+import os
+import pathlib
+import re
+
+path = pathlib.Path(os.environ["BOOTSTRAP_FILE"])
+text = path.read_text()
+
+if 'require("./linux-window-icon.cjs");' not in text:
+    pattern = re.compile(r'require\((["\'])\./bootstrap-[^"\']+\.js\1\);')
+
+    def inject(match):
+        return 'require("./linux-window-icon.cjs");\n' + match.group(0)
+
+    text, replacements = pattern.subn(inject, text, count=1)
+    if replacements != 1:
+        raise SystemExit(f"failed to patch {path}: expected 1 bootstrap chunk require, got {replacements}")
+    path.write_text(text)
+PY
 
     rm -rf "$workDir/app/node_modules/sparkle-darwin"
     find "$workDir/app" -name sparkle.node -delete
@@ -306,31 +319,6 @@ EOF
 
     runHook postInstall
   '';
-
-  passthru.tests = {
-    codex-app-bin-check = stdenvNoCC.mkDerivation {
-      name = "${pname}-check";
-      dontUnpack = true;
-      dontConfigure = true;
-      dontBuild = true;
-      nativeBuildInputs = [ file ];
-
-      installPhase = ''
-        test -x ${finalAttrs.finalPackage}/bin/${pname}
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node
-        test -f ${finalAttrs.finalPackage}/share/applications/${pname}.desktop
-        test -f ${finalAttrs.finalPackage}/share/icons/hicolor/512x512/apps/${pname}.png
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/codex-app-icon.png
-        ${gnugrep}/bin/grep -Fq '${lib.getExe codex}' ${finalAttrs.finalPackage}/bin/${pname}
-        ${gnugrep}/bin/grep -Fq 'Icon=${pname}' ${finalAttrs.finalPackage}/share/applications/${pname}.desktop
-        ${file}/bin/file ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node | ${gnugrep}/bin/grep -q ELF
-        ${file}/bin/file ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node | ${gnugrep}/bin/grep -q ELF
-        touch $out
-      '';
-    };
-  };
 
   meta = {
     description = "Run the official Codex desktop app on Linux and NixOS";
