@@ -148,9 +148,9 @@ def refresh_package_lock() -> None:
     )
 
 
-def run_flake_check() -> None:
-    print("Running nix flake check before publishing")
-    run("nix", "flake", "check", cwd=ROOT)
+def build_release_package() -> None:
+    print("Building the release package before committing metadata")
+    run("nix", "build", ".#codex-app-bin", "--no-link", cwd=ROOT)
 
 
 def git_configure_bot() -> None:
@@ -286,7 +286,6 @@ def main() -> int:
             if not args.dry_run:
                 # Metadata is already current, but the GitHub release may still
                 # need to be created or repaired after a previous partial run.
-                run_flake_check()
                 ensure_release(
                     version=version,
                     dmg_path=dmg_path,
@@ -303,7 +302,7 @@ def main() -> int:
             print(f"Prepared metadata update for Codex {version}")
             return 0
 
-        run_flake_check()
+        build_release_package()
         target_commit = git_commit_and_push(version)
         # The metadata update is now committed, so publish the matching GitHub
         # release state for this exact repository revision.
