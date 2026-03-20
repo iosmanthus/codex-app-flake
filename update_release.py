@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import plistlib
@@ -65,7 +64,7 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def prefetch_upstream_dmg() -> Path:
+def prefetch_upstream_dmg() -> tuple[Path, str]:
     print("Fetching the upstream DMG into the Nix store")
     result = run(
         "nix-prefetch-url",
@@ -75,7 +74,19 @@ def prefetch_upstream_dmg() -> Path:
         UPSTREAM_URL,
         capture=True,
     )
-    return Path(result.stdout.strip().splitlines()[-1])
+    lines = result.stdout.strip().splitlines()
+    nix_base32_hash = lines[-2]
+    store_path = Path(lines[-1])
+    sri_hash = run(
+        "nix",
+        "hash",
+        "to-sri",
+        "--type",
+        "sha256",
+        nix_base32_hash,
+        capture=True,
+    ).stdout.strip().splitlines()[-1]
+    return store_path, sri_hash
 
 
 def extract_dmg(dmg_path: Path, workdir: Path) -> tuple[Path, Path]:
@@ -115,11 +126,6 @@ def write_package_json(versions: dict[str, str]) -> None:
         },
     }
     write_json(PACKAGE_JSON_PATH, package_json)
-
-
-def compute_sha256(path: Path) -> str:
-    result = run("nix", "hash", "file", "--type", "sha256", "--sri", str(path), capture=True)
-    return result.stdout.strip().splitlines()[-1]
 
 
 def compute_npm_deps_hash() -> str:
@@ -245,32 +251,19 @@ def ensure_release(version: str, dmg_path: Path, target_commit: str, repo: str) 
                 cwd=ROOT,
             )
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="refresh local metadata files without pushing git changes or publishing a release",
-    )
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
     github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip() or None
     if github_repo is None:
         raise RuntimeError("GITHUB_REPOSITORY must be set")
 
     current_meta = read_json(META_PATH)
-    original_meta_text = META_PATH.read_text() if META_PATH.exists() else None
-    original_package_json_text = PACKAGE_JSON_PATH.read_text() if PACKAGE_JSON_PATH.exists() else None
-    original_package_lock_text = PACKAGE_LOCK_PATH.read_text() if PACKAGE_LOCK_PATH.exists() else None
+    original_meta_text = META_PATH.read_text()
+    original_package_json_text = PACKAGE_JSON_PATH.read_text()
+    original_package_lock_text = PACKAGE_LOCK_PATH.read_text()
 
     with tempfile.TemporaryDirectory() as tmpdir_name:
         tmpdir = Path(tmpdir_name)
-        dmg_path = prefetch_upstream_dmg()
-        sha256 = compute_sha256(dmg_path)
+        dmg_path, sha256 = prefetch_upstream_dmg()
 
         app_dir, app_root = extract_dmg(dmg_path, tmpdir)
         version = read_version(app_dir)
@@ -290,24 +283,10 @@ def main() -> int:
 
         if current_meta == next_meta:
             print(f"Codex {version} is up to date")
-            if not args.dry_run:
-                # Metadata is already current, but the GitHub release may still
-                # need to be created or repaired after a previous partial run.
-                ensure_release(
-                    version=version,
-                    dmg_path=dmg_path,
-                    target_commit=run("git", "rev-parse", "HEAD", cwd=ROOT, capture=True).stdout.strip(),
-                    repo=github_repo,
-                )
             return 0
 
-        if not args.dry_run and remote_tag_exists(version):
+        if remote_tag_exists(version):
             raise RuntimeError(f"tag {version} already exists but upstream sha256 changed")
-
-        if args.dry_run:
-            write_json(META_PATH, next_meta)
-            print(f"Prepared metadata update for Codex {version}")
-            return 0
 
         staged_meta = dict(next_meta)
         staged_meta["url"] = dmg_path.as_uri()
@@ -316,14 +295,9 @@ def main() -> int:
         try:
             build_release_package()
         except Exception:
-            if original_meta_text is None:
-                META_PATH.unlink(missing_ok=True)
-            else:
-                META_PATH.write_text(original_meta_text)
-            if original_package_json_text is not None:
-                PACKAGE_JSON_PATH.write_text(original_package_json_text)
-            if original_package_lock_text is not None:
-                PACKAGE_LOCK_PATH.write_text(original_package_lock_text)
+            META_PATH.write_text(original_meta_text)
+            PACKAGE_JSON_PATH.write_text(original_package_json_text)
+            PACKAGE_LOCK_PATH.write_text(original_package_lock_text)
             raise
 
         write_json(META_PATH, next_meta)
