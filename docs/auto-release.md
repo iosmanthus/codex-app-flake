@@ -48,7 +48,7 @@ The workflow should support:
 7. Regenerate `package-lock.json`.
 8. Recompute `npmDepsHash`.
 9. Write the new `meta.json`, with `url` set to the GitHub Release asset URL for that version.
-10. Build `.#codex-app-bin` with `nix build .#codex-app-bin --no-link`; if it fails, abort the release before committing anything.
+10. Fetch the upstream DMG directly into the Nix store with `nix-prefetch-url`, temporarily point `meta.json.url` at that store path, and build `.#codex-app-bin`; if the build fails, abort before committing anything.
 11. Commit and push `meta.json`, `package.json`, and `package-lock.json` to `main` using the GitHub Actions bot identity.
 12. Create a git tag from that commit using the upstream `version`.
 13. Create a GitHub Release from that tag and upload the downloaded DMG as `Codex-<version>.dmg`.
@@ -76,10 +76,10 @@ When the workflow commits `meta.json`, it should use:
 
 ## Failure Behavior
 
-- If the DMG download fails, fail the workflow.
+- If fetching the upstream DMG into the Nix store fails, fail the workflow.
 - If the metadata extraction fails, fail the workflow.
 - If package metadata regeneration fails, fail the workflow.
-- If `nix build .#codex-app-bin --no-link` fails, fail the workflow before committing or publishing a release.
+- If the pre-commit package build against the staged store DMG fails, fail the workflow before committing or publishing a release.
 - If the release upload fails, fail the workflow.
 - If no upstream update is detected, exit with success and leave the repository unchanged.
 
