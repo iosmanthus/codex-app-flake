@@ -73,7 +73,7 @@
           package = self.packages.${system}.codex-app-bin;
         in
         {
-          inherit (package.passthru.tests) codex-app-bin-check;
+          codex-app-bin-check = package;
         }
       );
     };

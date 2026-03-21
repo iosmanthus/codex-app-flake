@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import plistlib
@@ -12,14 +11,19 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 
+# Repository root used for all generated release metadata files.
 ROOT = Path(__file__).resolve().parent
+# Generated flake metadata consumed by package.nix.
 META_PATH = ROOT / "meta.json"
+# Native module manifest rewritten from the upstream app bundle.
 PACKAGE_JSON_PATH = ROOT / "package.json"
+# Lockfile used to derive npmDepsHash reproducibly.
 PACKAGE_LOCK_PATH = ROOT / "package-lock.json"
+# Mutable upstream DMG URL; the real version is read from the downloaded app.
 UPSTREAM_URL = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 PACKAGE_NAME = "codex-app-bin-native-build"
@@ -60,13 +64,29 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def download_upstream(destination: Path) -> None:
-    request = Request(
+def prefetch_upstream_dmg() -> tuple[Path, str]:
+    print("Fetching the upstream DMG into the Nix store")
+    result = run(
+        "nix-prefetch-url",
+        "--type",
+        "sha256",
+        "--print-path",
         UPSTREAM_URL,
-        headers={"User-Agent": "codex-app-flake-release-bot"},
+        capture=True,
     )
-    with urlopen(request) as response, destination.open("wb") as output:
-        shutil.copyfileobj(response, output)
+    lines = result.stdout.strip().splitlines()
+    nix_base32_hash = lines[-2]
+    store_path = Path(lines[-1])
+    sri_hash = run(
+        "nix",
+        "hash",
+        "to-sri",
+        "--type",
+        "sha256",
+        nix_base32_hash,
+        capture=True,
+    ).stdout.strip().splitlines()[-1]
+    return store_path, sri_hash
 
 
 def extract_dmg(dmg_path: Path, workdir: Path) -> tuple[Path, Path]:
@@ -108,11 +128,6 @@ def write_package_json(versions: dict[str, str]) -> None:
     write_json(PACKAGE_JSON_PATH, package_json)
 
 
-def compute_sha256(path: Path) -> str:
-    result = run("nix", "hash", "file", "--type", "sha256", "--sri", str(path), capture=True)
-    return result.stdout.strip().splitlines()[-1]
-
-
 def compute_npm_deps_hash() -> str:
     tool_path = run(
         "nix",
@@ -140,6 +155,11 @@ def refresh_package_lock() -> None:
         "--no-fund",
         cwd=ROOT,
     )
+
+
+def build_release_package() -> None:
+    print("Building the release package before committing metadata")
+    run("nix", "build", ".#codex-app-bin", "--no-link", cwd=ROOT)
 
 
 def git_configure_bot() -> None:
@@ -190,69 +210,60 @@ def read_release_info(tag: str, repo: str) -> dict | None:
 def ensure_release(version: str, dmg_path: Path, target_commit: str, repo: str) -> None:
     tag = version
     asset_name = release_asset_name(version)
-    asset_path = dmg_path.with_name(asset_name)
-    if asset_path != dmg_path:
-        shutil.copy2(dmg_path, asset_path)
 
     release_info = read_release_info(tag, repo)
     if release_info is None:
-        run(
-            "gh",
-            "release",
-            "create",
-            tag,
-            str(asset_path),
-            "--repo",
-            repo,
-            "--target",
-            target_commit,
-            "--title",
-            f"Codex {version}",
-            "--notes",
-            RELEASE_NOTES,
-            cwd=ROOT,
-        )
+        with tempfile.TemporaryDirectory() as tmpdir_name:
+            asset_path = Path(tmpdir_name) / asset_name
+            shutil.copy2(dmg_path, asset_path)
+            run(
+                "gh",
+                "release",
+                "create",
+                tag,
+                str(asset_path),
+                "--repo",
+                repo,
+                "--target",
+                target_commit,
+                "--title",
+                f"Codex {version}",
+                "--notes",
+                RELEASE_NOTES,
+                cwd=ROOT,
+            )
         return
 
     asset_names = {asset["name"] for asset in release_info.get("assets", [])}
     if asset_name not in asset_names:
-        run(
-            "gh",
-            "release",
-            "upload",
-            tag,
-            str(asset_path),
-            "--repo",
-            repo,
-            "--clobber",
-            cwd=ROOT,
-        )
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="refresh local metadata files without pushing git changes or publishing a release",
-    )
-    return parser.parse_args()
-
+        with tempfile.TemporaryDirectory() as tmpdir_name:
+            asset_path = Path(tmpdir_name) / asset_name
+            shutil.copy2(dmg_path, asset_path)
+            run(
+                "gh",
+                "release",
+                "upload",
+                tag,
+                str(asset_path),
+                "--repo",
+                repo,
+                "--clobber",
+                cwd=ROOT,
+            )
 
 def main() -> int:
-    args = parse_args()
     github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip() or None
     if github_repo is None:
         raise RuntimeError("GITHUB_REPOSITORY must be set")
 
     current_meta = read_json(META_PATH)
+    original_meta_text = META_PATH.read_text()
+    original_package_json_text = PACKAGE_JSON_PATH.read_text()
+    original_package_lock_text = PACKAGE_LOCK_PATH.read_text()
 
     with tempfile.TemporaryDirectory() as tmpdir_name:
         tmpdir = Path(tmpdir_name)
-        dmg_path = tmpdir / "Codex.dmg"
-
-        download_upstream(dmg_path)
-        sha256 = compute_sha256(dmg_path)
+        dmg_path, sha256 = prefetch_upstream_dmg()
 
         app_dir, app_root = extract_dmg(dmg_path, tmpdir)
         version = read_version(app_dir)
@@ -272,24 +283,33 @@ def main() -> int:
 
         if current_meta == next_meta:
             print(f"Codex {version} is up to date")
-            if not args.dry_run:
-                ensure_release(
-                    version=version,
-                    dmg_path=dmg_path,
-                    target_commit=run("git", "rev-parse", "HEAD", cwd=ROOT, capture=True).stdout.strip(),
-                    repo=github_repo,
-                )
+            ensure_release(
+                version=version,
+                dmg_path=dmg_path,
+                target_commit=run("git", "rev-parse", "HEAD", cwd=ROOT, capture=True).stdout.strip(),
+                repo=github_repo,
+            )
             return 0
 
-        if not args.dry_run and remote_tag_exists(version):
+        if remote_tag_exists(version):
             raise RuntimeError(f"tag {version} already exists but upstream sha256 changed")
+
+        staged_meta = dict(next_meta)
+        staged_meta["url"] = dmg_path.as_uri()
+        write_json(META_PATH, staged_meta)
+
+        try:
+            build_release_package()
+        except Exception:
+            META_PATH.write_text(original_meta_text)
+            PACKAGE_JSON_PATH.write_text(original_package_json_text)
+            PACKAGE_LOCK_PATH.write_text(original_package_lock_text)
+            raise
+
         write_json(META_PATH, next_meta)
-
-        if args.dry_run:
-            print(f"Prepared metadata update for Codex {version}")
-            return 0
-
         target_commit = git_commit_and_push(version)
+        # The metadata update is now committed, so publish the matching GitHub
+        # release state for this exact repository revision.
         ensure_release(version=version, dmg_path=dmg_path, target_commit=target_commit, repo=github_repo)
 
     return 0

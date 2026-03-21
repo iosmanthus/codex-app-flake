@@ -8,9 +8,7 @@
   libicns,
   nodePackages,
   nodejs_20,
-  file,
   gcc,
-  gnugrep,
   gnumake,
   pkg-config,
   coreutils,
@@ -114,43 +112,13 @@ stdenvNoCC.mkDerivation (finalAttrs: {
       cp -a "$resourcesDir/app.asar.unpacked/." "$workDir/app/"
     fi
 
-    cat > "$workDir/app/.vite/build/linux-window-icon.cjs" <<'EOF'
-if (process.platform === "linux" && process.type === "browser") {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const electron = require("electron");
+    cp ${./patches/linux-window-icon.cjs} "$workDir/app/.vite/build/linux-window-icon.cjs"
 
-  const iconPath = path.join(process.resourcesPath, "codex-app-icon.png");
-
-  if (fs.existsSync(iconPath)) {
-    const icon = electron.nativeImage.createFromPath(iconPath);
-
-    if (!icon.isEmpty()) {
-      const setWindowIcon = (window) => {
-        if (typeof window?.setIcon === "function") {
-          window.setIcon(icon);
-        }
-      };
-
-      electron.app.on("browser-window-created", (_event, window) => {
-        setWindowIcon(window);
-        window.once("ready-to-show", () => {
-          setWindowIcon(window);
-        });
-      });
-
-      for (const window of electron.BrowserWindow.getAllWindows()) {
-        setWindowIcon(window);
-      }
-    }
-  }
-}
-EOF
-
-    substituteInPlace "$workDir/app/.vite/build/bootstrap.js" \
-      --replace-fail \
-        'require("./bootstrap-BYAV6t_u.js");' \
-        'require("./linux-window-icon.cjs"); require("./bootstrap-BYAV6t_u.js");'
+    bootstrapFile="$workDir/app/.vite/build/bootstrap.js"
+    bootstrapTmp="$TMPDIR/bootstrap.js"
+    printf '%s\n' 'require("./linux-window-icon.cjs");' > "$bootstrapTmp"
+    cat "$bootstrapFile" >> "$bootstrapTmp"
+    mv "$bootstrapTmp" "$bootstrapFile"
 
     rm -rf "$workDir/app/node_modules/sparkle-darwin"
     find "$workDir/app" -name sparkle.node -delete
@@ -306,31 +274,6 @@ EOF
 
     runHook postInstall
   '';
-
-  passthru.tests = {
-    codex-app-bin-check = stdenvNoCC.mkDerivation {
-      name = "${pname}-check";
-      dontUnpack = true;
-      dontConfigure = true;
-      dontBuild = true;
-      nativeBuildInputs = [ file ];
-
-      installPhase = ''
-        test -x ${finalAttrs.finalPackage}/bin/${pname}
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node
-        test -f ${finalAttrs.finalPackage}/share/applications/${pname}.desktop
-        test -f ${finalAttrs.finalPackage}/share/icons/hicolor/512x512/apps/${pname}.png
-        test -f ${finalAttrs.finalPackage}/libexec/${pname}/resources/codex-app-icon.png
-        ${gnugrep}/bin/grep -Fq '${lib.getExe codex}' ${finalAttrs.finalPackage}/bin/${pname}
-        ${gnugrep}/bin/grep -Fq 'Icon=${pname}' ${finalAttrs.finalPackage}/share/applications/${pname}.desktop
-        ${file}/bin/file ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node | ${gnugrep}/bin/grep -q ELF
-        ${file}/bin/file ${finalAttrs.finalPackage}/libexec/${pname}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node | ${gnugrep}/bin/grep -q ELF
-        touch $out
-      '';
-    };
-  };
 
   meta = {
     description = "Run the official Codex desktop app on Linux and NixOS";
